@@ -4,7 +4,13 @@
 /* SPDX-FileCopyrightText: Copyright © 2022 Collabora */
 /* SPDX-License-Identifier: MIT */
 
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <stdlib.h>
+#include <fcntl.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <unistd.h>
 #include <stddef.h>
 #include <errno.h>
@@ -16,6 +22,7 @@
 #include <spa/utils/string.h>
 #include <spa/debug/log.h>
 
+#include <spa/utils/json.h>
 #include <lc3.h>
 
 #include "media-codecs.h"
@@ -23,7 +30,7 @@
 
 #define MAX_PACS	64
 
-static struct spa_log *log;
+static struct spa_log *lc3_log;
 static struct spa_log_topic log_topic = SPA_LOG_TOPIC(0, "spa.bluez5.codecs.lc3");
 #undef SPA_LOG_TOPIC_DEFAULT
 #define SPA_LOG_TOPIC_DEFAULT &log_topic
@@ -90,6 +97,26 @@ static const struct {
 	{ BAP_CHANNEL_RS,   SPA_AUDIO_CHANNEL_SR }, /* is it the right mapping? */
 };
 
+typedef struct audio_config {
+    uint16_t rate;
+    uint8_t duration;
+    uint8_t channels;
+    uint16_t framelen[2]; /* octets:0-1 - minimum, 2-3: maximum */
+    uint8_t max_codec_frames_per_sdu;
+
+    /* qos */
+    uint8_t framing;
+    uint8_t retransmission;
+    uint16_t transport_latency;
+    uint32_t presentation_delay;
+
+    uint32_t location;
+
+    uint16_t octets_per_codec_frame; /* applicable for only client */
+} audio_config_t;
+
+static audio_config_t *audio_sink, *audio_source;
+
 static int write_ltv(uint8_t *dest, uint8_t type, void* value, size_t len)
 {
 	struct ltv *ltv = (struct ltv *)dest;
@@ -99,6 +126,175 @@ static int write_ltv(uint8_t *dest, uint8_t type, void* value, size_t len)
 	memcpy(ltv->value, value, len);
 
 	return len + 2;
+}
+
+static int parse_audio_config(struct spa_json *it, audio_config_t **caps_pp, const bool sink)
+{
+	char key[256];
+	const char *val;
+	struct spa_json o;
+	audio_config_t *caps;
+	bool enable = false;
+
+	spa_json_enter_object(it, &o);
+	if (!(caps = calloc(1, sizeof (*caps))))
+		return -1;
+
+	while (spa_json_get_string(&o, key, sizeof(key)) > 0) {
+		spa_log_info(lc3_log, "key name: %s", key);
+
+		if (spa_streq(key, "enable")) {
+			spa_json_get_bool(&o, &enable);
+			if (!enable)
+				break;
+		} else if (spa_streq(key, "rate")) {
+			spa_json_get_int(&o, (int *)&caps->rate);
+			caps->rate &= 0xFFFF;
+		} else if (spa_streq(key, "duration")) {
+			spa_json_get_int(&o, (int *)&caps->duration);
+			caps->duration &= 0xFF;
+		} else if (spa_streq(key, "channels")) {
+			spa_json_get_int(&o, (int *)&caps->channels);
+			caps->channels &= 0xFF;
+		} else if (spa_streq(key, "framelen_min")) {
+			spa_json_get_int(&o, (int *)&caps->framelen[0]);
+			caps->framelen[0] &= 0xFFFF;
+		} else if (spa_streq(key, "framelen_max")) {
+			spa_json_get_int(&o, (int *)&caps->framelen[1]);
+			caps->framelen[1] &= 0xFFFF;
+		} else if (spa_streq(key, "framing"))
+			spa_json_get_int(&o, (int *)&caps->framing);
+		else if (spa_streq(key, "retransmission"))
+			spa_json_get_int(&o, (int *)&caps->retransmission);
+		else if (spa_streq(key, "transport_latency"))
+			spa_json_get_int(&o, (int *)&caps->transport_latency);
+		else if (spa_streq(key, "presentation_delay"))
+			spa_json_get_int(&o, (int *)&caps->presentation_delay);
+		else if (spa_streq(key, "max_codec_frames_per_sdu"))
+			spa_json_get_int(&o, (int *)&caps->max_codec_frames_per_sdu);
+		else if (spa_streq(key, "octets_per_codec_frame"))
+			spa_json_get_int(&o, (int *)&caps->octets_per_codec_frame);
+		else if (spa_streq(key, "location"))
+			spa_json_get_int(&o, (int *)&caps->location);
+		else {
+			fprintf(stderr, "Skipping unknown field: %s\n", key);
+			if (spa_json_next(&it[1], &val) < 0)
+				break;
+		}
+	}
+
+	if (!enable) {
+		*caps_pp = NULL;
+		free(caps);
+	} else
+		*caps_pp = caps;
+
+	if (*caps_pp) {
+		fprintf(stderr, "---------------------------------------\n");
+		if (sink)
+			fprintf(stderr, "PipeWire sink confifuration\n");
+		else
+			fprintf(stderr, "PipeWire source confifuration\n");
+		if (caps->rate & LC3_FREQ_8KHZ)
+			fprintf(stderr, "Supports: 8KHz rate\n");
+		if (caps->rate & LC3_FREQ_11KHZ)
+			fprintf(stderr, "Supports: 11KHz rate\n");
+		if (caps->rate & LC3_FREQ_16KHZ)
+			fprintf(stderr, "Supports: 16KHz rate\n");
+		if (caps->rate & LC3_FREQ_22KHZ)
+			fprintf(stderr, "Supports: 22KHz rate\n");
+		if (caps->rate & LC3_FREQ_24KHZ)
+			fprintf(stderr, "Supports: 24KHz rate\n");
+		if (caps->rate & LC3_FREQ_32KHZ)
+			fprintf(stderr, "Supports: 32KHz rate\n");
+		if (caps->rate & LC3_FREQ_44KHZ)
+			fprintf(stderr, "Supports: 44_1 KHz rate\n");
+		if (caps->rate & LC3_FREQ_48KHZ)
+			fprintf(stderr, "Supports: 48KHz rate\n");
+
+		if (caps->duration & LC3_DUR_10)
+			fprintf(stderr, "Supports duration: 10ms\n");
+		if (caps->duration & LC3_DUR_7_5)
+			fprintf(stderr, "Supports duration: 7.5ms\n");
+
+		if (caps->channels & LC3_CHAN_1)
+			fprintf(stderr, "Supports mono channel\n");
+		if (caps->channels & LC3_CHAN_2)
+			fprintf(stderr, "Supports stereo channel\n");
+
+		fprintf(stderr, "Min framelen: %u Max framelen: %u\n", caps->framelen[0], caps->framelen[1]);
+		fprintf(stderr, "Supported codec frames per sdu: %u\n", caps->max_codec_frames_per_sdu);
+
+		if (caps->location & BAP_CHANNEL_FL)
+			fprintf(stderr, "Supports FRONT_LEFT\n");
+		if (caps->location & BAP_CHANNEL_FR)
+			fprintf(stderr, "Supports FRONT_RIGHT\n");
+		fprintf(stderr, "---------------------------------------\n");
+	}
+	return 0;
+}
+
+static int  audio_config_init(void)
+{
+	int fd, exit_code;
+	void *data;
+	struct stat sbuf;
+	const char *name = "audio_config.json", *dir;
+	struct spa_json it[3];
+	char key[256], path[256];
+	const char *val;
+
+	dir = getenv("PIPEWIRE_CONFIG_DIR");
+	if (!dir) {
+		spa_log_error(lc3_log, "PIPEWIRE_CONFIG_DIR is not set");
+		return -ENOENT;
+	}
+	strcpy(path, dir);
+	strcat(path, "/");
+	strcat(path, name);
+	fprintf(stderr, "Kiran: %s", path);
+
+	if ((fd = open(path, O_CLOEXEC | O_RDONLY)) < 0) {
+		spa_log_error(lc3_log, "error opening file '%s': %m\n", path);
+		goto error;
+	}
+
+	if (fstat(fd, &sbuf) < 0) {
+		spa_log_error(lc3_log, "error statting file '%s': %m\n", path);
+		exit_code = -ENOENT;
+		goto error;
+	}
+
+	if ((data = mmap(NULL, sbuf.st_size, PROT_READ, MAP_PRIVATE, fd, 0)) == MAP_FAILED) {
+		spa_log_error(lc3_log, "error mapping file '%s': %m\n", name);
+		exit_code = -ENOMEM;
+		goto error_unmap;
+	}
+
+	spa_json_init(&it[0], data, sbuf.st_size);
+
+	if (spa_json_enter_object(&it[0], &it[1]) <= 0) {
+		spa_log_error(lc3_log, "bap_config: config must be an object");
+		exit_code = -EINVAL;
+		goto error_unmap;
+	}
+
+	while (spa_json_get_string(&it[1], key, sizeof(key)) > 0) {
+		if (spa_streq(key, "sink"))
+			parse_audio_config(&it[1], &audio_sink, true);
+		else if (spa_streq(key, "source"))
+			parse_audio_config(&it[1], &audio_source, false);
+		else {
+			if (spa_json_next(&it[1], &val) < 0)
+				break;
+		}
+	}
+
+error_unmap:
+	munmap(data, sbuf.st_size);
+error:
+	close(fd);
+	return exit_code;
 }
 
 static int write_ltv_uint8(uint8_t *dest, uint8_t type, uint8_t value)
@@ -121,6 +317,23 @@ static int codec_fill_caps(const struct media_codec *codec, uint32_t flags,
 {
 	uint8_t *data = caps;
 	uint16_t framelen[2] = {htobs(LC3_MIN_FRAME_BYTES), htobs(LC3_MAX_FRAME_BYTES)};
+	audio_config_t *audio_config = NULL;
+
+	if ((flags & MEDIA_CODEC_FLAG_SINK) && audio_sink)
+		audio_config = audio_sink;
+	else if (audio_source)
+		audio_config = audio_source;
+
+	if (audio_config) {
+		data += write_ltv_uint16(data, LC3_TYPE_FREQ, htobs(audio_config->rate));
+		data += write_ltv_uint8(data, LC3_TYPE_DUR, audio_config->duration);
+		data += write_ltv_uint8(data, LC3_TYPE_CHAN, audio_config->channels);
+		framelen[0] = htobs(audio_config->framelen[0]);
+		framelen[1] = htobs(audio_config->framelen[1]);
+		data += write_ltv(data, LC3_TYPE_FRAMELEN, framelen, sizeof(framelen));
+		data += write_ltv_uint8(data, LC3_TYPE_BLKS, audio_config->max_codec_frames_per_sdu);
+		return data - caps;
+	}
 
 	data += write_ltv_uint16(data, LC3_TYPE_FREQ,
 	                         htobs(LC3_FREQ_48KHZ | LC3_FREQ_32KHZ | \
@@ -478,7 +691,7 @@ static int pac_cmp(const void *p1, const void *p2)
 {
 	const struct pac_data *pac1 = p1;
 	const struct pac_data *pac2 = p2;
-	struct spa_debug_log_ctx debug_ctx = SPA_LOG_DEBUG_INIT(log, SPA_LOG_LEVEL_TRACE);
+	struct spa_debug_log_ctx debug_ctx = SPA_LOG_DEBUG_INIT(lc3_log, SPA_LOG_LEVEL_TRACE);
 	bap_lc3_t conf1, conf2;
 	int res1, res2;
 
@@ -498,7 +711,7 @@ static int codec_select_config(const struct media_codec *codec, uint32_t flags,
 	bap_lc3_t conf;
 	uint8_t *data = config;
 	uint32_t locations = 0;
-	struct spa_debug_log_ctx debug_ctx = SPA_LOG_DEBUG_INIT(log, SPA_LOG_LEVEL_TRACE);
+	struct spa_debug_log_ctx debug_ctx = SPA_LOG_DEBUG_INIT(lc3_log, SPA_LOG_LEVEL_TRACE);
 	int i;
 
 	if (caps == NULL)
@@ -510,7 +723,7 @@ static int codec_select_config(const struct media_codec *codec, uint32_t flags,
 				sscanf(settings->items[i].value, "%"PRIu32, &locations);
 
 		if (spa_atob(spa_dict_lookup(settings, "bluez5.bap.debug")))
-			debug_ctx = SPA_LOG_DEBUG_INIT(log, SPA_LOG_LEVEL_DEBUG);
+			debug_ctx = SPA_LOG_DEBUG_INIT(lc3_log, SPA_LOG_LEVEL_DEBUG);
 	}
 
 	/* Select best conf from those possible */
@@ -977,8 +1190,8 @@ static int codec_increase_bitpool(void *data)
 
 static void codec_set_log(struct spa_log *global_log)
 {
-	log = global_log;
-	spa_log_topic_init(log, &log_topic);
+	lc3_log = global_log;
+	spa_log_topic_init(lc3_log, &log_topic);
 }
 
 const struct media_codec bap_codec_lc3 = {
@@ -1010,3 +1223,8 @@ MEDIA_CODEC_EXPORT_DEF(
 	"lc3",
 	&bap_codec_lc3
 );
+static void reg(void) __attribute__ ((constructor));
+static void reg(void)
+{
+	audio_config_init();
+}

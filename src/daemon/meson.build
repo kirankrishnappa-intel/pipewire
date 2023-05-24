@@ -71,6 +71,7 @@ conf_files = [
  'pipewire-pulse.conf',
  'pipewire-avb.conf',
  'pipewire-aes67.conf',
+ 'audio_config.json'
 ]
 
 if build_vk

@@ -1,0 +1,60 @@
+{
+    "comment" : {
+        "rate": {
+            "8KHz": 1,
+            "11Khz": 2,
+            "16KHz": 4,
+            "22KHz": 8,
+            "24KHz": 16,
+            "32KHz": 32,
+            "44_1KHz": 64,
+            "48KHz": 128
+        },
+        "duration" : {
+            "7.5ms": 1,
+            "10ms" : 2
+        },
+        "channels": {
+            "chan_1": 1,
+            "chan_2": 2
+        }
+    },
+
+    "sink": {
+        "enable": true,
+        "rate" : 128,
+        "duration": 1,
+        "channels": 1,
+        "framelen_min": 20,
+        "framelen_max": 400,
+        "max_codec_frames_per_sdu": 1,
+
+        "framing": false,
+        "retransmission":2,
+        "transport_latency": 8,
+        "presentation_delay": 40000,
+        "location": 1,
+
+
+        "octets_per_codec_frame": 90
+    },
+
+    "source": {
+        "enable": true,
+        "rate" : 128,
+        "duration": 1,
+        "channels": 1,
+        "framelen_min": 20,
+        "framelen_max": 400,
+        "max_codec_frames_per_sdu": 1,
+
+        "framing": false,
+        "retransmission":2,
+        "transport_latency": 8,
+        "presentation_delay": 40000,
+        "location": 1,
+
+
+        "octets_per_codec_frame": 90
+    }
+}
