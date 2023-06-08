@@ -98,6 +98,9 @@ struct media_codec {
 			const struct bap_endpoint_qos *endpoint_qos,
 			struct bap_codec_qos *qos);
 
+	/** Need to get supported QoS which needs to be registered to BlueZ */
+	int (*get_supported_qos)(const struct media_codec *codec, uint32_t flags,
+			struct bap_codec_qos *qos);
 	/** qsort comparison sorting caps in order of preference for the codec.
 	 * Used in codec switching to select best remote endpoints.
 	 * The caps handed in correspond to this codec_id, but are

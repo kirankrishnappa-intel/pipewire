@@ -137,6 +137,7 @@ struct bap_codec_qos {
 	uint16_t latency;
 	uint32_t delay;
 	uint8_t target_latency;
+	uint32_t location;
 };
 
 struct bap_codec_qos_full {

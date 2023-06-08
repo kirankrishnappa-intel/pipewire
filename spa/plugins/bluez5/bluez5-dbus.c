@@ -4680,7 +4680,8 @@ out:
 }
 
 static void append_media_object(DBusMessageIter *iter, const char *endpoint,
-		const char *uuid, uint8_t codec_id, uint8_t *caps, size_t caps_size)
+		const char *uuid, uint8_t codec_id, uint8_t *caps, size_t caps_size,
+		const struct media_codec *codec)
 {
 	const char *interface_name = BLUEZ_MEDIA_ENDPOINT_INTERFACE;
 	DBusMessageIter object, array, entry, dict;
@@ -4707,6 +4708,7 @@ static void append_media_object(DBusMessageIter *iter, const char *endpoint,
 	if (spa_bt_profile_from_uuid(uuid) & (SPA_BT_PROFILE_BAP_SINK | SPA_BT_PROFILE_BAP_SOURCE)) {
 		dbus_uint32_t locations;
 		dbus_uint16_t supported_context, context;
+		struct bap_codec_qos qos;
 
 		locations = BAP_CHANNEL_ALL;
 		if (spa_bt_profile_from_uuid(uuid) & SPA_BT_PROFILE_BAP_SINK) {
@@ -4716,6 +4718,11 @@ static void append_media_object(DBusMessageIter *iter, const char *endpoint,
 					BAP_CONTEXT_MEDIA | BAP_CONTEXT_GAME);
 		}
 
+		codec->get_supported_qos(codec, (spa_bt_profile_from_uuid(uuid) & SPA_BT_PROFILE_BAP_SINK) ? MEDIA_CODEC_FLAG_SINK: 0, &qos);
+		append_basic_variant_dict_entry(&dict, "RTN", DBUS_TYPE_BYTE, "y", &qos.retransmission);
+		append_basic_variant_dict_entry(&dict, "Latency", DBUS_TYPE_UINT16, "q", &qos.latency);
+		append_basic_variant_dict_entry(&dict, "Delay", DBUS_TYPE_UINT32, "u", &qos.delay);
+		locations = qos.location;
 		append_basic_variant_dict_entry(&dict, "Locations", DBUS_TYPE_UINT32, "u", &locations);
 		append_basic_variant_dict_entry(&dict, "Context", DBUS_TYPE_UINT16, "q", &context);
 		append_basic_variant_dict_entry(&dict, "SupportedContext", DBUS_TYPE_UINT16, "q", &supported_context);
@@ -4800,7 +4807,7 @@ static DBusHandlerResult object_manager_handler(DBusConnection *c, DBusMessage *
 					spa_log_info(monitor->log, "register media sink codec %s: %s", media_codecs[i]->name, endpoint);
 					append_media_object(&array, endpoint,
 					        codec->bap ? SPA_BT_UUID_BAP_SINK : SPA_BT_UUID_A2DP_SINK,
-							codec_id, caps, caps_size);
+							codec_id, caps, caps_size, codec);
 				}
 			}
 
@@ -4815,7 +4822,7 @@ static DBusHandlerResult object_manager_handler(DBusConnection *c, DBusMessage *
 					spa_log_info(monitor->log, "register media source codec %s: %s", media_codecs[i]->name, endpoint);
 					append_media_object(&array, endpoint,
 					        codec->bap ? SPA_BT_UUID_BAP_SOURCE : SPA_BT_UUID_A2DP_SOURCE,
-							codec_id, caps, caps_size);
+							codec_id, caps, caps_size, codec);
 				}
 			}
 
@@ -4831,7 +4838,7 @@ static DBusHandlerResult object_manager_handler(DBusConnection *c, DBusMessage *
 							spa_log_info(monitor->log, "register media source codec %s: %s", media_codecs[i]->name, endpoint);
 							append_media_object(&array, endpoint,
 									SPA_BT_UUID_BAP_BROADCAST_SOURCE,
-									codec_id, caps, caps_size);
+									codec_id, caps, caps_size, codec);
 						}
 				}
 				
@@ -4846,7 +4853,7 @@ static DBusHandlerResult object_manager_handler(DBusConnection *c, DBusMessage *
 						spa_log_info(monitor->log, "register broadcast media sink codec %s: %s", media_codecs[i]->name, endpoint);
 						append_media_object(&array, endpoint,
 								SPA_BT_UUID_BAP_BROADCAST_SINK,
-								codec_id, caps, caps_size);
+								codec_id, caps, caps_size, codec);
 					}
 				}
 			}

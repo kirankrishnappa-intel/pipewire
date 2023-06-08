@@ -981,6 +981,31 @@ static int codec_get_qos(const struct media_codec *codec,
 	return 0;
 }
 
+static int codec_get_supported_qos (const struct media_codec *codec, uint32_t flags,
+			struct bap_codec_qos *qos)
+{
+	if ((flags & MEDIA_CODEC_FLAG_SINK) && audio_sink) {
+		qos->retransmission = audio_sink->retransmission;
+		qos->latency = audio_sink->transport_latency;
+		qos->framing = audio_sink->framing;
+		qos->location = audio_sink->location;
+		qos->delay = audio_sink->presentation_delay;
+	} else if (!flags && audio_source) {
+		qos->retransmission = audio_source->retransmission;
+		qos->latency = audio_source->transport_latency;
+		qos->framing = audio_source->framing;
+		qos->location = audio_source->location;
+		qos->delay = audio_source->presentation_delay;
+	} else {
+		/* set the params for high reliable data */
+		qos->retransmission = 13;
+		qos->latency = 100;
+		qos->delay = 40000;
+		qos->location = 0x01;
+	}
+	return 0;
+}
+
 static void *codec_init(const struct media_codec *codec, uint32_t flags,
 		void *config, size_t config_len, const struct spa_audio_info *info,
 		void *props, size_t mtu)
@@ -1205,6 +1230,7 @@ const struct media_codec bap_codec_lc3 = {
 	.enum_config = codec_enum_config,
 	.validate_config = codec_validate_config,
 	.get_qos = codec_get_qos,
+	.get_supported_qos = codec_get_supported_qos,
 	.caps_preference_cmp = codec_caps_preference_cmp,
 	.init = codec_init,
 	.deinit = codec_deinit,
