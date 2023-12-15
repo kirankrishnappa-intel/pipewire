@@ -1190,7 +1190,7 @@ static SPA_UNUSED int codec_decode(void *data,
 		return -EINVAL;
 
 	for (ich = 0; ich < this->channels; ich++) {
-		uint8_t *in = (uint8_t *)src + ich * this->framelen;
+		uint8_t *in = src ? ((uint8_t *)src + ich * this->framelen) : NULL;
 		uint8_t *out = (uint8_t *)dst + (ich * 4);
 		res = lc3_decode(this->dec[ich], in, this->framelen, LC3_PCM_FORMAT_S24, out, this->channels);
 		if (SPA_UNLIKELY(res < 0))

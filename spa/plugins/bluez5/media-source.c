@@ -397,16 +397,41 @@ static void recycle_buffer(struct impl *this, struct port *port, uint32_t buffer
 	}
 }
 
-static int32_t read_data(struct impl *this) {
+static int32_t read_data(struct impl *this, int *pkt_status) {
 	const ssize_t b_size = sizeof(this->buffer_read);
 	int32_t size_read = 0;
+	uint8_t  aux[1024];
+	struct iovec iov;
+	struct cmsghdr *cm;
+	struct msghdr m;
+
+	spa_zero(aux);
+	spa_zero(iov);
+	spa_zero(m);
+
+	m.msg_iov = &iov;
+	m.msg_iovlen = 1;
+	m.msg_control = aux;
+	m.msg_controllen = sizeof(aux);
+
+	iov.iov_base = this->buffer_read;
+	iov.iov_len = b_size;
+
 
 again:
 	/* read data from socket */
-	size_read = recv(this->fd, this->buffer_read, b_size, MSG_DONTWAIT);
+	size_read = recvmsg(this->fd, &m, MSG_DONTWAIT);
 
-	if (size_read == 0)
+	if (size_read == 0) {
+		for (cm = CMSG_FIRSTHDR(&m); cm; cm = CMSG_NXTHDR(&m, cm)) {
+#define BT_SCM_PKT_STATUS 3
+			if (cm->cmsg_level == SOL_BLUETOOTH && cm->cmsg_type == BT_SCM_PKT_STATUS) {
+				memcpy(pkt_status, CMSG_DATA(cm), sizeof (*pkt_status));
+				return 0;
+			}
+		}
 		return 0;
+	}
 	else if (size_read < 0) {
 		/* retry if interrupted */
 		if (errno == EINTR)
@@ -441,13 +466,16 @@ static int32_t decode_data(struct impl *this, uint8_t *src, uint32_t src_size,
 	avail = dst_size;
 	while (src_size > 0) {
 		if ((processed = this->codec->decode(this->codec_data,
-				src, src_size, dst, avail, &written)) <= 0)
+				src, src_size, dst, avail, &written)) <= 0) {
+			spa_log_error(this->log, "processed: %ld", processed);
 			return processed;
+		}
 
 		/* update source and dest pointers */
 		spa_return_val_if_fail (avail > written, -ENOSPC);
 		src_size -= processed;
-		src += processed;
+		if (src)
+			src += processed;
 		avail -= written;
 		dst += written;
 	}
@@ -463,6 +491,7 @@ static void media_on_ready_read(struct spa_source *source)
 	int32_t size_read, decoded;
 	uint32_t avail;
 	uint64_t dt;
+	int pkt_status;
 
 	/* make sure the source is an input */
 	if ((source->rmask & SPA_IO_IN) == 0) {
@@ -477,14 +506,21 @@ static void media_on_ready_read(struct spa_source *source)
 	spa_log_trace(this->log, "socket poll");
 
 	/* read */
-	size_read = read_data (this);
-	if (size_read == 0)
+	pkt_status = 0;
+	size_read = read_data(this, &pkt_status);
+	if (size_read == 0) {
+		if (pkt_status) {
+			spa_log_debug(this->log, "Got error packet: status: %d", pkt_status);
+			goto do_plc;
+		}
 		return;
+	}
 	if (size_read < 0) {
 		spa_log_error(this->log, "failed to read data: %s", spa_strerror(size_read));
 		goto stop;
 	}
 
+do_plc:
 	/* update the current pts */
 	spa_system_clock_gettime(this->data_system, CLOCK_MONOTONIC, &now);
 
@@ -497,7 +533,10 @@ static void media_on_ready_read(struct spa_source *source)
 	/* decode to buffer */
 	buf = spa_bt_decode_buffer_get_write(&port->buffer, &avail);
 	spa_log_trace(this->log, "read socket data size:%d, avail:%d", size_read, avail);
-	decoded = decode_data(this, this->buffer_read, size_read, buf, avail);
+	if (pkt_status)
+		decoded = decode_data(this, NULL, this->transport->read_mtu, buf, avail);
+	else
+		decoded = decode_data(this, this->buffer_read, size_read, buf, avail);
 	if (decoded < 0) {
 		spa_log_debug(this->log, "failed to decode data: %d", decoded);
 		return;
@@ -654,6 +693,12 @@ static int transport_start(struct impl *this)
 	val = 6;
 	if (setsockopt(this->fd, SOL_SOCKET, SO_PRIORITY, &val, sizeof(val)) < 0)
 		spa_log_warn(this->log, "SO_PRIORITY failed: %m");
+
+#define BT_PKT_STATUS 16
+	val = 1;
+	if (setsockopt(this->fd, SOL_BLUETOOTH, BT_PKT_STATUS, &val, sizeof(val)) < 0)
+		spa_log_warn(this->log, "BT_PKT_STATUS failed: %m");
+
 
 	reset_buffers(port);
 
