@@ -30,6 +30,7 @@ bluez5_sources = [
   'midi-parser.c',
   'midi-node.c',
   'midi-server.c',
+  'cras_plc.c'
 ]
 
 bluez5_interface_src = gnome.gdbus_codegen('bluez5-interface-gen',
