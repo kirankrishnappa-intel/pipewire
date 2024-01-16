@@ -34,6 +34,7 @@
 #include <sbc/sbc.h>
 
 #include "defs.h"
+#include "cras_plc.h"
 
 static struct spa_log_topic log_topic = SPA_LOG_TOPIC(0, "spa.bluez5.source.sco");
 #undef SPA_LOG_TOPIC_DEFAULT
@@ -139,6 +140,9 @@ struct impl {
 	uint8_t msbc_buffer_pos;
 
 	struct timespec now;
+
+	struct cras_msbc_plc* msbc_plc;
+
 };
 
 #define CHECK_PORT(this,d,p)	((d) == SPA_DIRECTION_OUTPUT && (p) == 0)
@@ -419,6 +423,31 @@ static bool is_zero_packet(uint8_t *data, int size)
 	return true;
 }
 
+static int handle_packet_loss(struct impl *this) {
+	int decoded;
+	unsigned int avail;
+	uint8_t* buf;
+	struct port *port = &this->port;
+
+	buf = spa_bt_decode_buffer_get_write(&port->buffer, &avail);
+	spa_log_debug(this->log, "Avail size: %u", avail);
+	if (avail < MSBC_CODE_SIZE) {
+		spa_log_debug(this->log, "No output buffer. skipping plc");
+		return 0;
+	}
+
+	decoded =
+	cras_msbc_plc_handle_bad_frames(this->msbc_plc, &this->msbc, buf);
+	if (decoded < 0) {
+		return decoded;
+	}
+	spa_log_debug(this->log, "Decoded: %d", decoded);
+
+	spa_bt_decode_buffer_write_packet(&port->buffer, decoded);
+
+	return decoded;
+}
+
 static uint32_t preprocess_and_decode_msbc_data(void *userdata, uint8_t *read_data, int size_read)
 {
 	struct impl *this = userdata;
@@ -464,13 +493,22 @@ static uint32_t preprocess_and_decode_msbc_data(void *userdata, uint8_t *read_da
 			this->msbc_seq = seq;
 		} else if (seq != this->msbc_seq) {
 			/* TODO: PLC (too late to insert data now) */
-			spa_log_info(this->log,
+
+			while (seq != (this->msbc_seq % 4)) {
+				spa_log_error(this->log,
 					"missing mSBC packet: %u != %u", seq, this->msbc_seq);
-			this->msbc_seq = seq;
+
+				processed = handle_packet_loss(this);
+				this->msbc_seq++;
+				if (processed < 0)
+					return processed;
+				decoded += processed;
+			}
 		}
 
 		this->msbc_seq = (this->msbc_seq + 1) % 4;
 
+		buf = spa_bt_decode_buffer_get_write(&port->buffer, &avail);
 		if (avail < MSBC_DECODED_SIZE)
 			spa_log_warn(this->log, "Output buffer full, dropping msbc data");
 
@@ -483,10 +521,12 @@ static uint32_t preprocess_and_decode_msbc_data(void *userdata, uint8_t *read_da
 			spa_log_warn(this->log, "sbc_decode failed: %d", processed);
 			/* TODO: manage errors */
 			continue;
-		}
+		} else {
 
-		spa_bt_decode_buffer_write_packet(&port->buffer, written);
-		decoded += written;
+			spa_bt_decode_buffer_write_packet(&port->buffer, written);
+			decoded += written;
+			cras_msbc_plc_handle_good_frames(this->msbc_plc, this->msbc_buffer, this->msbc_buffer);
+		}
 	}
 
 	return decoded;
@@ -696,6 +736,7 @@ static int transport_start(struct impl *this)
 		this->msbc_seq_initialized = false;
 
 		this->msbc_buffer_pos = 0;
+		this->msbc_plc = cras_msbc_plc_create();
 	}
 
 	this->io_error = false;
@@ -1640,6 +1681,8 @@ impl_init(const struct spa_handle_factory *factory,
 
 	this->timerfd = spa_system_timerfd_create(this->data_system,
 			CLOCK_MONOTONIC, SPA_FD_CLOEXEC | SPA_FD_NONBLOCK);
+
+	//this->msbc_plc = cras_msbc_plc_create();
 
 	return 0;
 }
