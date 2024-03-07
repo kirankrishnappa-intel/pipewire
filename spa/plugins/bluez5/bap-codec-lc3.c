@@ -27,6 +27,7 @@
 
 #include "media-codecs.h"
 #include "bap-codec-caps.h"
+#include <config.h>
 
 #define MAX_PACS	64
 
@@ -246,13 +247,13 @@ static int  audio_config_init(void)
 
 	dir = getenv("PIPEWIRE_CONFIG_DIR");
 	if (!dir) {
-		spa_log_error(lc3_log, "PIPEWIRE_CONFIG_DIR is not set");
-		return -ENOENT;
+                fprintf(stderr, "PIPEWIRE_CONFIG_DIR is not set");
+                dir = PIPEWIRE_CONFDATADIR;
 	}
 	strcpy(path, dir);
 	strcat(path, "/");
 	strcat(path, name);
-	fprintf(stderr, "Kiran: %s", path);
+	fprintf(stderr, "audio_config: %s", path);
 
 	if ((fd = open(path, O_CLOEXEC | O_RDONLY)) < 0) {
 		spa_log_error(lc3_log, "error opening file '%s': %m\n", path);
